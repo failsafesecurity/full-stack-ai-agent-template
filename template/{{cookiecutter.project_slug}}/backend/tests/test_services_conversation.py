@@ -270,7 +270,7 @@ class TestConversationServiceCreate:
             mock_repo.create_conversation.assert_called_once()
 
 
-class TestConversationServiceAddMessage:
+class TestConversationServiceAddMessageAuthorization:
     """Tests for add_message authorization."""
 
     @pytest.fixture
