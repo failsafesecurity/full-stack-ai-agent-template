@@ -50,6 +50,7 @@ enable_code_execution = "{{ cookiecutter.enable_code_execution }}" == "True"
 enable_deep_research = "{{ cookiecutter.enable_deep_research }}" == "True"
 enable_todo = "{{ cookiecutter.enable_todo }}" == "True"
 enable_subagents = "{{ cookiecutter.enable_subagents }}" == "True"
+enable_mcp_client = "{{ cookiecutter.enable_mcp_client }}" == "True"
 use_pydantic_deep = "{{ cookiecutter.use_pydantic_deep }}" == "True"
 use_telegram = "{{ cookiecutter.use_telegram }}" == "True"
 use_slack = "{{ cookiecutter.use_slack }}" == "True"
@@ -80,12 +81,24 @@ def remove_file(path: str) -> None:
         print(f"  Removed: {os.path.relpath(path)}")
 
 
+def read_text(filepath: str) -> str:
+    """Read a rendered file as UTF-8.
+
+    Explicit encoding, not the platform default: the template ships hundreds of files
+    with non-ASCII content (emoji in the docs, Polish prose in the per-locale .tsx), so
+    on an interpreter whose preferred encoding is not UTF-8 — Windows cp125x, or a
+    container with LC_ALL=C and PYTHONCOERCECLOCALE=0 — a bare open() raises
+    UnicodeDecodeError and takes the whole generation (and the upgrade render) down.
+    """
+    with open(filepath, encoding="utf-8", errors="replace") as f:
+        return f.read()
+
+
 def is_stub_file(filepath: str) -> bool:
     """Return True if the file has no real code — empty or docstring-only."""
     if not os.path.exists(filepath):
         return False
-    with open(filepath) as f:
-        content = f.read().strip()
+    content = read_text(filepath).strip()
     if not content:
         return True
     # Single triple-quoted docstring, no real code
@@ -158,6 +171,39 @@ if not enable_deep_research and use_frontend:
     remove_file(os.path.join(frontend_src, "stores", "chat-mode-store.ts"))
     remove_file(os.path.join(frontend_src, "lib", "research-from-tools.ts"))
     remove_file(os.path.join(frontend_src, "components", "chat", "research-replay-block.tsx"))
+
+# MCP client (Settings → Integrations). The backend files are full modules
+# (not Jinja stubs), so the stub sweep won't catch them — remove explicitly.
+if not enable_mcp_client:
+    backend_root = os.path.join(os.getcwd(), "backend")
+    remove_file(os.path.join(backend_app, "agents", "mcp.py"))
+    remove_file(os.path.join(backend_app, "agents", "mcp_oauth.py"))
+    remove_file(os.path.join(backend_app, "services", "mcp_connection.py"))
+    remove_file(os.path.join(backend_app, "repositories", "mcp_connection.py"))
+    remove_file(os.path.join(backend_app, "schemas", "mcp_connection.py"))
+    remove_file(os.path.join(backend_app, "db", "models", "mcp_connection.py"))
+    remove_file(os.path.join(backend_app, "api", "routes", "v1", "me_mcp_connections.py"))
+    remove_file(os.path.join(backend_root, "tests", "test_mcp_connections.py"))
+    remove_file(
+        os.path.join(backend_root, "alembic", "versions", "0026_create_mcp_connections.py")
+    )
+    if use_frontend:
+        frontend_src = os.path.join(os.getcwd(), "frontend", "src")
+        remove_file(os.path.join(frontend_src, "lib", "mcp-catalog.ts"))
+        remove_file(os.path.join(frontend_src, "lib", "mcp-logos.generated.ts"))
+        remove_file(os.path.join(frontend_src, "lib", "mcp-connections-api.ts"))
+        remove_file(os.path.join(frontend_src, "hooks", "use-mcp-connections.ts"))
+        remove_file(os.path.join(frontend_src, "components", "demo", "demo-mode.tsx"))
+        remove_file(os.path.join(os.getcwd(), "frontend", "scripts", "gen-mcp-logos.ts"))
+        remove_file(
+            os.path.join(frontend_src, "components", "settings", "mcp-connections-manager.tsx")
+        )
+        remove_dir(
+            os.path.join(
+                frontend_src, "app", "[locale]", "(dashboard)", "settings", "integrations"
+            )
+        )
+        remove_dir(os.path.join(frontend_src, "app", "api", "me", "mcp-connections"))
 
 # The fetched-page tool-result renderer is only referenced when web fetch is on.
 if not enable_web_fetch and use_frontend:
@@ -296,7 +342,6 @@ if not enable_caching:
     remove_file(os.path.join(backend_app, "core", "cache.py"))
 
 if not enable_rate_limiting:
-    remove_file(os.path.join(backend_app, "core", "rate_limit.py"))
     remove_dir(os.path.join(backend_app, "services", "rate_limit"))
 
 if not enable_oauth:
@@ -347,6 +392,16 @@ if not enable_rag:
         remove_file(os.path.join(frontend_src, "hooks", "use-knowledge-bases.ts"))
         remove_file(os.path.join(frontend_src, "hooks", "use-org-integrations.ts"))
         remove_file(os.path.join(frontend_src, "types", "knowledge-base.ts"))
+        # The org "Integrations" screen manages RAG sync sources — it imports
+        # @/components/rag + @/lib/rag-api + use-org-integrations (all removed
+        # above) and its proxy calls /api/v1/org/integrations, which the backend
+        # no longer exposes. The button linking to it is gated in orgs/page.tsx.
+        remove_dir(
+            os.path.join(
+                frontend_src, "app", "[locale]", "(dashboard)", "orgs", "[id]", "integrations",
+            ),
+        )
+        remove_dir(os.path.join(frontend_src, "app", "api", "orgs", "[id]", "integrations"))
 else:
     # RAG enabled — remove optional components if not enabled
     rag_dir = os.path.join(backend_app, "services", "rag")
@@ -421,6 +476,18 @@ for root, _dirs, files in os.walk(backend_app):
         if is_stub_file(filepath):
             remove_file(filepath)
 
+# Same idea for docs and frontend modules: a file whose whole body sits behind
+# a feature-gate conditional renders to an empty file (not a missing one) when
+# the flag is off, and the .py scan above never sees it.
+for root, dirs, files in os.walk(os.getcwd()):
+    dirs[:] = [d for d in dirs if d not in (".git", ".next", ".venv", "node_modules")]
+    for fname in files:
+        if not fname.endswith((".md", ".mdx", ".ts", ".tsx")):
+            continue
+        filepath = os.path.join(root, fname)
+        if not read_text(filepath).strip():
+            remove_file(filepath)
+
 # --- Worker/Background tasks ---
 # worker/background/ holds in-process handlers (FastAPI BackgroundTasks fallback)
 # and stays regardless of distributed queue selection. worker/tasks/ holds
@@ -471,7 +538,7 @@ def remove_empty_dirs(path: str) -> None:
     elif remaining == ["__init__.py"]:
         init_path = os.path.join(path, "__init__.py")
         try:
-            init_text = open(init_path).read().strip()
+            init_text = read_text(init_path).strip()
         except OSError:
             init_text = ""
         if init_text == "":
@@ -555,19 +622,26 @@ else:
                 "# Backend API URL (server-side only - not exposed to browser)",
                 "BACKEND_URL=http://localhost:{{ cookiecutter.backend_port }}",
                 "",
-                "# WebSocket URL for real-time features",
-                "BACKEND_WS_URL=ws://localhost:{{ cookiecutter.backend_port }}",
+                "# Send the auth cookies with the Secure flag. Unset follows NODE_ENV,",
+                "# so production means Secure — and a browser discards a Secure cookie",
+                "# served over plain http://, which logs you in and then 401s every",
+                "# request after it. Only set false for http:// on a trusted network.",
+                "# COOKIE_SECURE=false",
+                "",
+                "# WebSocket URL for the chat stream. Read by the BROWSER, so it must",
+                "# be an address the browser can reach — and NEXT_PUBLIC_* is inlined",
+                "# at build time, so in Docker it has to be passed as a build arg.",
+                "NEXT_PUBLIC_WS_URL=ws://localhost:{{ cookiecutter.backend_port }}",
+                "",
+                "# Public API URL, exposed to the browser (OAuth redirects, API docs",
+                "# links). Same build-time rule as NEXT_PUBLIC_WS_URL above.",
+                "NEXT_PUBLIC_API_URL=http://localhost:{{ cookiecutter.backend_port }}",
                 "",
                 "# Canonical site URL — used for SEO metadata, OG tags, sitemap.xml,",
                 "# robots.txt, schema.org organization. Override in production with",
                 "# the real https origin.",
                 "NEXT_PUBLIC_SITE_URL=http://localhost:{{ cookiecutter.frontend_port }}",
             ]
-            env_lines.extend([
-                "",
-                "# Authentication (always enabled)",
-                "NEXT_PUBLIC_AUTH_ENABLED=true",
-            ])
             if enable_oauth:
                 # Build the comma-separated provider list the OAuth buttons read.
                 # Currently only Google has full backend wiring; expand here when
@@ -576,9 +650,6 @@ else:
                 if "{{ cookiecutter.enable_oauth_google }}" == "True":
                     providers.append("google")
                 env_lines.extend([
-                    "",
-                    "# Public API URL for OAuth redirects (exposed to browser)",
-                    "NEXT_PUBLIC_API_URL=http://localhost:{{ cookiecutter.backend_port }}",
                     "",
                     "# OAuth providers shown on /login + /register (comma-separated).",
                     "# Drives the <OAuthButtons> component — must include only providers",
@@ -602,8 +673,10 @@ else:
             if "{{ cookiecutter.enable_brand_from_config }}" == "True":
                 env_lines.extend([
                     "",
-                    "# Runtime brand override (white-label)",
-                    "# Set NEXT_PUBLIC_BRAND_COLOR to one of: blue, green, red, violet, orange",
+                    "# Brand override (white-label). NEXT_PUBLIC_* is inlined at build",
+                    "# time, so changing these needs a rebuild — in Docker they are",
+                    "# passed as build args (see docker-compose.frontend.yml).",
+                    "# NEXT_PUBLIC_BRAND_COLOR: blue, green, red, violet or orange",
                     "NEXT_PUBLIC_BRAND_COLOR={{ cookiecutter.brand_color }}",
                     "NEXT_PUBLIC_BRAND_LOGO_URL=",
                 ])
@@ -612,9 +685,11 @@ else:
                 f.write("\n".join(env_lines) + "\n")
             print("Generated frontend/.env.local")
 
+_render_only = os.environ.get("FASTAPI_FULLSTACK_RENDER_ONLY") == "1"
+
 # Generate uv.lock for backend (required for Docker builds)
 backend_dir = os.path.join(os.getcwd(), "backend")
-if os.path.exists(backend_dir):
+if os.path.exists(backend_dir) and not _render_only:
     uv_cmd = shutil.which("uv")
     if uv_cmd:
         print("Generating uv.lock for backend...")
@@ -631,7 +706,7 @@ if os.path.exists(backend_dir):
     else:
         print("Warning: uv not found. Run 'uv lock' in backend/ to generate lock file.")
 
-if os.path.exists(backend_dir):
+if os.path.exists(backend_dir) and not _render_only:
     ruff_cmd = None
 
     ruff_path = shutil.which("ruff")
@@ -665,7 +740,7 @@ if os.path.exists(backend_dir):
         print("Warning: ruff not found. Run 'ruff format .' in backend/ to format code.")
 
 frontend_dir = os.path.join(os.getcwd(), "frontend")
-if use_frontend and os.path.exists(frontend_dir):
+if use_frontend and os.path.exists(frontend_dir) and not _render_only:
     bun_cmd = shutil.which("bun")
     npx_cmd = shutil.which("npx")
 

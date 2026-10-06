@@ -1,4 +1,4 @@
-.PHONY: install format lint test run clean help db-init dev dev-down dev-logs dev-rebuild dev-frontend docker-clean stage stage-down prod prod-down
+.PHONY: install format lint test run clean help db-init dev dev-down dev-logs dev-rebuild dev-frontend docker-clean stage stage-down prod prod-down upgrade upgrade-dry-run upgrade-new-features upgrade-finalize
 
 # === Environments ===========================================================
 # `make dev`   — local development (docker-compose.dev.yml + bind-mounted source)
@@ -162,6 +162,20 @@ install:
 	@echo ""
 	@echo "Note: backend/.env is pre-configured for development"
 {%- endif %}
+
+# === Template upgrade ===
+# Pull latest template changes via 3-way merge. `make help` lists the targets.
+upgrade:
+	uvx fastapi-fullstack@latest upgrade $(ARGS)
+
+upgrade-dry-run:
+	uvx fastapi-fullstack@latest upgrade --dry-run $(ARGS)
+
+upgrade-new-features:
+	uvx fastapi-fullstack@latest upgrade --with-new-features $(ARGS)
+
+upgrade-finalize:
+	uvx fastapi-fullstack@latest upgrade finalize $(ARGS)
 
 # === Code Quality ===
 format:
@@ -373,10 +387,9 @@ vercel-deploy:
 	@echo "✅ Frontend deployed to Vercel!"
 	@echo "   Set environment variables in Vercel dashboard:"
 	@echo "   BACKEND_URL=https://api.your-domain.com"
-	@echo "   BACKEND_WS_URL=wss://api.your-domain.com"
-{%- if cookiecutter.use_jwt %}
-	@echo "   NEXT_PUBLIC_AUTH_ENABLED=true"
-{%- endif %}
+	@echo "   NEXT_PUBLIC_API_URL=https://api.your-domain.com"
+	@echo "   NEXT_PUBLIC_WS_URL=wss://api.your-domain.com"
+	@echo "   NEXT_PUBLIC_SITE_URL=https://your-domain.com"
 {%- if cookiecutter.enable_rag %}
 	@echo "   NEXT_PUBLIC_RAG_ENABLED=true"
 {%- endif %}
@@ -486,6 +499,12 @@ help:
 	@echo "  make docker-prod-logs     View production logs"
 	@echo ""
 {%- endif %}
+	@echo "Template upgrade:"
+	@echo "  make upgrade-dry-run       Preview template updates (no changes)"
+	@echo "  make upgrade               Pull latest template changes (3-way merge)"
+	@echo "  make upgrade-new-features  Upgrade + opt into newly added features"
+	@echo "  make upgrade-finalize      Bump manifest after resolving conflicts"
+	@echo ""
 	@echo "Other:"
 	@echo "  make routes        Show all API routes"
 	@echo "  make clean         Clean cache files"

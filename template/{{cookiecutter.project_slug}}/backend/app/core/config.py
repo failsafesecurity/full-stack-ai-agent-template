@@ -11,6 +11,30 @@ from pydantic import computed_field, field_validator, model_validator{% if cooki
 from pydantic import field_validator, model_validator{% if cookiecutter.use_jwt or cookiecutter.use_api_key or cookiecutter.enable_cors %}, ValidationInfo{% endif %}
 {% endif -%}
 from pydantic_settings import BaseSettings, SettingsConfigDict
+{%- if cookiecutter.enable_mcp_client %}
+from pydantic import BaseModel, Field
+{%- endif %}
+
+
+{%- if cookiecutter.enable_mcp_client %}
+
+
+# Same slug rule as a user connection (app/schemas/mcp_connection.py). The name
+# becomes the server's tool prefix in the agent, so an unconstrained name could
+# collapse two servers onto one prefix — and the second would then be dropped
+# from every chat turn. Reject it at startup instead.
+MCP_SERVER_NAME_PATTERN = r"^[a-z0-9][a-z0-9-]{0,31}$"
+
+
+class McpServerConfig(BaseModel):
+    """One deployment-managed MCP server (see MCP_SERVERS below)."""
+
+    name: str = Field(pattern=MCP_SERVER_NAME_PATTERN)
+    url: str
+    headers: dict[str, str] = {}
+    # None = expose every tool the server offers.
+    allowed_tools: list[str] | None = None
+{%- endif %}
 
 
 def find_env_file() -> Path | None:
@@ -70,9 +94,13 @@ class Settings(BaseSettings):
     @computed_field  # type: ignore[prop-decorator]
     @property
     def DATABASE_URL_SYNC(self) -> str:
-        """Build sync PostgreSQL connection URL (for Alembic)."""
+        """Build sync PostgreSQL connection URL (for Alembic).
+
+        The driver is named because a bare ``postgresql://`` means psycopg 3 on
+        SQLAlchemy 2.1 but psycopg2 on 2.0, which SQLModel pins.
+        """
         return (
-            f"postgresql://{self.POSTGRES_USER}:{self.POSTGRES_PASSWORD}"
+            f"postgresql+psycopg2://{self.POSTGRES_USER}:{self.POSTGRES_PASSWORD}"
             f"@{self.POSTGRES_HOST}:{self.POSTGRES_PORT}/{self.POSTGRES_DB}"
         )
 
@@ -377,13 +405,37 @@ class Settings(BaseSettings):
 {%- if cookiecutter.enable_code_execution %}
 
     CODE_EXECUTION_TIMEOUT_SECS: float = 10.0
-    CODE_EXECUTION_MAX_ALLOCATIONS: int = 50_000_000
+    CODE_EXECUTION_MAX_MEMORY_MB: int = 256
 {%- endif %}
 {%- if cookiecutter.enable_deep_research %}
 
     ENABLE_DEEP_RESEARCH: bool = False
     DEEP_RESEARCH_MAX_TOKENS: int = 120_000
     DEEP_RESEARCH_COMPRESS_THRESHOLD: float = 0.8
+{%- endif %}
+{%- if cookiecutter.enable_mcp_client %}
+
+    # Deployment-managed MCP servers, always attached to the agent (on top of
+    # the per-user connections configured in Settings → Integrations).
+    # JSON list, e.g.:
+    #   MCP_SERVERS='[{"name":"github-internal","url":"https://api.githubcopilot.com/mcp/",
+    #                  "headers":{"Authorization":"Bearer ..."},
+    #                  "allowed_tools":["search_issues"]}]'
+    MCP_SERVERS: list[McpServerConfig] = []
+    # Per-server budget for the pre-flight tools/list ping; unreachable servers
+    # are skipped for the turn instead of failing the chat.
+    MCP_CONNECT_TIMEOUT_SECS: float = 3.0
+
+    @field_validator("MCP_SERVERS")
+    @classmethod
+    def validate_mcp_server_names(cls, v: list[McpServerConfig]) -> list[McpServerConfig]:
+        """Reject duplicate names: they share a tool prefix, and the agent can
+        only attach one server per prefix — the rest would vanish silently."""
+        names = [server.name for server in v]
+        duplicates = sorted({name for name in names if names.count(name) > 1})
+        if duplicates:
+            raise ValueError(f"MCP_SERVERS has duplicate server names: {', '.join(duplicates)}")
+        return v
 {%- endif %}
 {%- if cookiecutter.use_deepagents %}
 
